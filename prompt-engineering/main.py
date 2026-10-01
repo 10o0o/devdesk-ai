@@ -76,9 +76,6 @@ category: installation, access, incident, general 중 하나
 }
 """
 
-    # _todo(
-    #     "정책 프롬프트: 역할, 업무 범위, 근거, 비밀정보, 담당자 확인, 답변 형식을 담은 문자열"
-    # )
     if variant == "reasoning":
         policy += """요청이 지원 범위에 들어가는지 확인하세요
 답을 뒷받침 하는 근거가 있는지 확인하세요
@@ -87,7 +84,6 @@ category: installation, access, incident, general 중 하나
 판단과 answer, source_ids, needs_human, category가 서로 맞는지 확인하세요
 """
 
-        # _todo("정책 프롬프트: 답변 전에 근거와 제약을 점검하게 하는 문자열")
     corpus = json.dumps(
         sorted(documents, key=lambda item: item["doc_id"]),
         ensure_ascii=False,
@@ -98,9 +94,15 @@ category: installation, access, incident, general 중 하나
 
 # 필수 2 / 답변 검증과 수정. 스키마를 만든 뒤 값과 출처를 검사합니다.
 def answer_format():
-    properties = _todo(
-        "답변 검증과 수정: answer, source_ids, needs_human, category의 JSON Schema 속성 dict"
-    )
+    properties = {
+        "answer": {"type": "string"},
+        "source_ids": {"type": "array", "items": {"type": "string"}},
+        "needs_human": {"type": "boolean"},
+        "category": {
+            "type": "string",
+            "enum": ["installation", "access", "incident", "general"],
+        },
+    }
     schema = {
         "type": "object",
         "properties": properties,
@@ -121,22 +123,19 @@ def validate_answer(raw, known_ids):
     answer = json.loads(raw)
     Draft202012Validator(answer_format()["format"]["schema"]).validate(answer)
     # 이유: 스키마를 통과해도 출처와 답변 본문을 따로 확인하는 이유를 적으세요.
+    # 스키마는 답변 형식에 대한 검사는 하지만, 본문 내용에 대한 검사는 하지 않기 때문
     rules = [
-        (_todo("답변 검증과 수정: answer가 공백뿐인지 판정하는 조건"), "blank answer"),
+        (answer["answer"].strip() == "", "blank answer"),
         (
-            _todo(
-                "답변 검증과 수정: source_ids에 known_ids 밖의 값이 있는지 판정하는 조건"
-            ),
+            any(source_id not in known_ids for source_id in answer["source_ids"]),
             "unknown source_id",
         ),
         (
-            _todo("답변 검증과 수정: source_ids에 중복이 있는지 판정하는 조건"),
+            len(answer["source_ids"]) != len(set(answer["source_ids"])),
             "duplicate source_id",
         ),
         (
-            _todo(
-                "답변 검증과 수정: 출처가 없는데 needs_human도 False인지 판정하는 조건"
-            ),
+            not answer["source_ids"] and not answer["needs_human"],
             "unsupported answer requires human",
         ),
     ]
@@ -167,9 +166,8 @@ def finish_answer(send, request, response, known_ids, events):
             reason = "refusal"
         else:
             try:
-                answer = _todo(
-                    "답변 검증과 수정: validate_answer에 응답 본문과 known_ids를 전달하는 호출"
-                )
+                answer = validate_answer(response["output_text"], known_ids)
+
                 return {
                     "answer": answer,
                     "fallback_reason": None,
@@ -190,12 +188,24 @@ def finish_answer(send, request, response, known_ids, events):
                 else:
                     # 종류: invalid_json, schema_error, blank_answer, unknown_source,
                     # duplicate_source, unsupported_answer. 종류에 맞게 안내를 만드세요.
-                    hint = _todo("답변 검증과 수정: error_kind에 맞는 수정 안내 문자열")
+                    hint = ""
+
+                    if error_kind == "invalid_json":
+                        hint = "JSON 문법에 오류가 있습니다. 유효한 JSON 문법으로 다시 출력하세요."
+                    elif error_kind == "schema_error":
+                        hint = "응답이 스키마를 위반했습니다. 제공한 스키마에 맞게 출력하세요"
+                    elif error_kind == "blank_answer":
+                        hint = "빈 답변입니다. 공백이 아닌 답변을 작성하세요"
+                    elif error_kind == "unknown_source":
+                        hint = "없는 출처 입니다. 실제 제공된 문서의 ID만 사용하세요"
+                    elif error_kind == "duplicate_source":
+                        hint = "중복 출처 입니다. 같은 출처의 ID는 한번만 포함하세요."
+                    elif error_kind == "unsupported_answer":
+                        hint = "출처가 없는데 담당자 확인이 불필요하다고 표시했습니다. 확인 가능한 근거가 없다면 needs_human을 true로 바꾸고 담당자 확인이 필요함을 안내하세요."
+
                     repair_used = True
                     support.append_repair_input(request, response, hint)
-                    response = _todo(
-                        "답변 검증과 수정: send로 수정 요청을 전송하는 호출"
-                    )
+                    response = send(request)
                     continue
         return {
             "answer": fallback,
@@ -206,7 +216,12 @@ def finish_answer(send, request, response, known_ids, events):
 
 # 필수 3 / 티켓 조회. 티켓 조회 조건과 모델에 돌려줄 값을 정합니다.
 def tool_schema():
-    parameters = _todo("티켓 조회: ticket_id 하나만 받는 object JSON Schema")
+    parameters = {
+        "type": "object",
+        "properties": {"ticket_id": {"type": "string", "pattern": "^IT-[0-9]{4}$"}},
+        "required": ["ticket_id"],
+        "additionalProperties": False,
+    }
     return {
         "type": "function",
         "name": "lookup_ticket",
@@ -217,13 +232,12 @@ def tool_schema():
 
 
 def execute_tool(name, arguments, tickets):
-    if _todo("티켓 조회: 허용하지 않은 함수 이름인지 판정하는 조건"):
+    if name != "lookup_ticket":
         return {"ok": False, "error": "unknown_tool"}
     try:
         args = json.loads(arguments)
-        if _todo(
-            "티켓 조회: args가 dict가 아니거나 키가 ticket_id 하나가 아닌 조건. 키 누락도 포함"
-        ):
+        if not isinstance(args, dict) or set(args) != {"ticket_id"}:
+            # "티켓 조회: args가 dict가 아니거나 키가 ticket_id 하나가 아닌 조건. 키 누락도 포함"
             raise ValueError("unexpected arguments")
         ticket_id = args["ticket_id"]
         if not isinstance(ticket_id, str) or not re.fullmatch(
@@ -232,9 +246,10 @@ def execute_tool(name, arguments, tickets):
             raise ValueError("invalid ticket_id")
     except (ValueError, TypeError):
         return {"ok": False, "error": "invalid_arguments"}
+
     if ticket_id not in tickets:
         return {"ok": False, "error": "not_found", "ticket_id": ticket_id}
-    return {"ok": True, "ticket": _todo("티켓 조회: tickets에서 찾은 티켓의 사본")}
+    return {"ok": True, "ticket": copy.deepcopy(tickets[ticket_id])}
 
 
 def tool_roundtrip(send, request, tickets, events):
@@ -252,13 +267,14 @@ def tool_roundtrip(send, request, tickets, events):
         if not calls:
             return request, response
         # 이유: 모델이 요청한 도구를 누가 실행하며 call_id를 왜 유지하는지 적으세요.
-        request["input"].extend(_todo("티켓 조회: 이번 모델의 output 전체 사본"))
+        # 요청한 도구는 우리 코드에서 실행하며, call_id로 해당 실행 결과를 원래 함수 호출과 연결한다.
+
+        request["input"].extend(copy.deepcopy(output))
         for call in calls:
             if not isinstance(call.get("call_id"), str) or not call["call_id"]:
                 return request, {"status": "incomplete", "output": []}
-            result = _todo(
-                "티켓 조회: execute_tool에 함수 이름, 인자, tickets를 전달하는 호출"
-            )
+            result = execute_tool(call["name"], call["arguments"], tickets)
+
             events.append(
                 {
                     "event": "tool_result",
@@ -271,7 +287,7 @@ def tool_roundtrip(send, request, tickets, events):
             request["input"].append(
                 {
                     "type": "function_call_output",
-                    "call_id": _todo("티켓 조회: 이번 함수 호출의 연결 ID"),
+                    "call_id": call["call_id"],
                     "output": json.dumps(result, ensure_ascii=False),
                 }
             )
@@ -282,7 +298,9 @@ def tool_roundtrip(send, request, tickets, events):
 def image_content(question, image_path):
     if not isinstance(question, str) or not question.strip():
         raise ValueError("question is empty")
+
     content = [{"type": "input_text", "text": question}]
+
     if image_path is not None:
         content.append(
             _todo(
